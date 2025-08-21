@@ -1,0 +1,407 @@
+# backend_analytics.py
+import psycopg2
+import pandas as pd
+from datetime import date
+
+# Database connection parameters
+# IMPORTANT: Replace these with your actual PostgreSQL credentials
+DB_HOST = "localhost"
+DB_NAME = "fitness_tracker_db" # Make sure this matches your created DB name
+DB_USER = "your_username"
+DB_PASSWORD = "your_password"
+DB_PORT = "5432"
+
+def get_db_connection():
+    """Establishes and returns a database connection."""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT
+        )
+        return conn
+    except psycopg2.Error as e:
+        print(f"Error connecting to database: {e}")
+        return None
+
+# --- CRUD Operations for Users ---
+
+def create_user(username, email):
+    """Inserts a new user into the users table."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO users (username, email) VALUES (%s, %s) RETURNING user_id",
+                        (username, email))
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            return user_id, "User created successfully."
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            return None, "Username or email already exists."
+        except psycopg2.Error as e:
+            conn.rollback()
+            return None, f"Error creating user: {e}"
+        finally:
+            conn.close()
+    return None, "Database connection error."
+
+def get_users():
+    """Retrieves all users."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            df = pd.read_sql_query("SELECT user_id, username, email, date_joined FROM users ORDER BY username", conn)
+            return df
+        except psycopg2.Error as e:
+            print(f"Error fetching users: {e}")
+            return pd.DataFrame()
+        finally:
+            conn.close()
+    return pd.DataFrame()
+
+def get_user_by_username(username):
+    """Retrieves a user by username."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, username, email FROM users WHERE username = %s", (username,))
+            user = cur.fetchone()
+            return user
+        except psycopg2.Error as e:
+            print(f"Error fetching user by username: {e}")
+            return None
+        finally:
+            conn.close()
+    return None
+
+# --- CRUD Operations for Workouts ---
+
+def create_workout(user_id, activity_type, duration_minutes, calories_burned, workout_date, notes):
+    """Inserts a new workout into the workouts table."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO workouts (user_id, activity_type, duration_minutes, calories_burned, workout_date, notes) VALUES (%s, %s, %s, %s, %s, %s)",
+                (user_id, activity_type, duration_minutes, calories_burned, workout_date, notes)
+            )
+            conn.commit()
+            return "Workout logged successfully."
+        except psycopg2.Error as e:
+            conn.rollback()
+            return f"Error logging workout: {e}"
+        finally:
+            conn.close()
+    return "Database connection error."
+
+def read_workouts(user_id=None, activity_type=None, start_date=None, end_date=None, sort_by=None, sort_order='DESC'):
+    """Reads workouts from the database with optional filtering and sorting."""
+    conn = get_db_connection()
+    if conn:
+        query = "SELECT w.workout_id, u.username, w.activity_type, w.duration_minutes, w.calories_burned, w.workout_date, w.notes FROM workouts w JOIN users u ON w.user_id = u.user_id"
+        conditions = []
+        params = []
+
+        if user_id:
+            conditions.append("w.user_id = %s")
+            params.append(user_id)
+        if activity_type:
+            conditions.append("w.activity_type = %s")
+            params.append(activity_type)
+        if start_date:
+            conditions.append("w.workout_date >= %s")
+            params.append(start_date)
+        if end_date:
+            conditions.append("w.workout_date <= %s")
+            params.append(end_date)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        if sort_by:
+            if sort_by in ["workout_date", "duration_minutes", "calories_burned"]:
+                query += f" ORDER BY w.{sort_by} {sort_order}"
+            else:
+                print(f"Warning: Invalid sort_by column '{sort_by}'. Not applying sort.")
+        try:
+            df = pd.read_sql_query(query, conn, params=params)
+            return df
+        except psycopg2.Error as e:
+            print(f"Error reading workouts: {e}")
+            return pd.DataFrame()
+        finally:
+            conn.close()
+    return pd.DataFrame()
+
+def update_workout(workout_id, new_data):
+    """Updates an existing workout in the workouts table."""
+    conn = get_db_connection()
+    if conn:
+        set_clauses = []
+        params = []
+        for key, value in new_data.items():
+            set_clauses.append(f"{key} = %s")
+            params.append(value)
+        params.append(workout_id)
+
+        query = f"UPDATE workouts SET {', '.join(set_clauses)} WHERE workout_id = %s"
+        try:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            conn.commit()
+            return f"Workout {workout_id} updated successfully."
+        except psycopg2.Error as e:
+            conn.rollback()
+            return f"Error updating workout {workout_id}: {e}"
+        finally:
+            conn.close()
+    return "Database connection error."
+
+def delete_workout(workout_id):
+    """Deletes a workout from the workouts table."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM workouts WHERE workout_id = %s", (workout_id,))
+            conn.commit()
+            return f"Workout {workout_id} deleted successfully."
+        except psycopg2.Error as e:
+            conn.rollback()
+            return f"Error deleting workout {workout_id}: {e}"
+        finally:
+            conn.close()
+    return "Database connection error."
+
+# --- Aggregation and Business Insights Functions ---
+
+def get_total_users():
+    """Returns the total number of registered users."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM users")
+            count = cur.fetchone()[0]
+            return count
+        except psycopg2.Error as e:
+            print(f"Error getting total users: {e}")
+            return 0
+        finally:
+            conn.close()
+    return 0
+
+def get_total_workouts(user_id=None):
+    """Returns the total number of workouts logged (overall or for a specific user)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            if user_id:
+                cur.execute("SELECT COUNT(*) FROM workouts WHERE user_id = %s", (user_id,))
+            else:
+                cur.execute("SELECT COUNT(*) FROM workouts")
+            count = cur.fetchone()[0]
+            return count
+        except psycopg2.Error as e:
+            print(f"Error getting total workouts: {e}")
+            return 0
+        finally:
+            conn.close()
+    return 0
+
+def get_total_duration(user_id=None):
+    """Returns the total duration of workouts in minutes (overall or for a specific user)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            if user_id:
+                cur.execute("SELECT SUM(duration_minutes) FROM workouts WHERE user_id = %s", (user_id,))
+            else:
+                cur.execute("SELECT SUM(duration_minutes) FROM workouts")
+            total_duration = cur.fetchone()[0]
+            return total_duration if total_duration is not None else 0
+        except psycopg2.Error as e:
+            print(f"Error getting total duration: {e}")
+            return 0
+        finally:
+            conn.close()
+    return 0
+
+def get_total_calories_burned(user_id=None):
+    """Returns the total calories burned (overall or for a specific user)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            if user_id:
+                cur.execute("SELECT SUM(calories_burned) FROM workouts WHERE user_id = %s", (user_id,))
+            else:
+                cur.execute("SELECT SUM(calories_burned) FROM workouts")
+            total_calories = cur.fetchone()[0]
+            return total_calories if total_calories is not None else 0
+        except psycopg2.Error as e:
+            print(f"Error getting total calories burned: {e}")
+            return 0
+        finally:
+            conn.close()
+    return 0
+
+def get_average_duration(user_id=None):
+    """Returns the average workout duration in minutes (overall or for a specific user)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            if user_id:
+                cur.execute("SELECT AVG(duration_minutes) FROM workouts WHERE user_id = %s", (user_id,))
+            else:
+                cur.execute("SELECT AVG(duration_minutes) FROM workouts")
+            avg_duration = cur.fetchone()[0]
+            return avg_duration if avg_duration is not None else 0.0
+        except psycopg2.Error as e:
+            print(f"Error getting average duration: {e}")
+            return 0.0
+        finally:
+            conn.close()
+    return 0.0
+
+def get_average_calories_burned(user_id=None):
+    """Returns the average calories burned per workout (overall or for a specific user)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            if user_id:
+                cur.execute("SELECT AVG(calories_burned) FROM workouts WHERE user_id = %s", (user_id,))
+            else:
+                cur.execute("SELECT AVG(calories_burned) FROM workouts")
+            avg_calories = cur.fetchone()[0]
+            return avg_calories if avg_calories is not None else 0.0
+        except psycopg2.Error as e:
+            print(f"Error getting average calories burned: {e}")
+            return 0.0
+        finally:
+            conn.close()
+    return 0.0
+
+def get_min_max_duration(user_id=None):
+    """Returns the minimum and maximum workout durations (overall or for a specific user)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            if user_id:
+                cur.execute("SELECT MIN(duration_minutes), MAX(duration_minutes) FROM workouts WHERE user_id = %s", (user_id,))
+            else:
+                cur.execute("SELECT MIN(duration_minutes), MAX(duration_minutes) FROM workouts")
+            min_dur, max_dur = cur.fetchone()
+            return min_dur if min_dur is not None else 0, max_dur if max_dur is not None else 0
+        except psycopg2.Error as e:
+            print(f"Error getting min/max duration: {e}")
+            return 0, 0
+        finally:
+            conn.close()
+    return 0, 0
+
+def get_min_max_calories_burned(user_id=None):
+    """Returns the minimum and maximum calories burned (overall or for a specific user)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            if user_id:
+                cur.execute("SELECT MIN(calories_burned), MAX(calories_burned) FROM workouts WHERE user_id = %s", (user_id,))
+            else:
+                cur.execute("SELECT MIN(calories_burned), MAX(calories_burned) FROM workouts")
+            min_cal, max_cal = cur.fetchone()
+            return min_cal if min_cal is not None else 0, max_cal if max_cal is not None else 0
+        except psycopg2.Error as e:
+            print(f"Error getting min/max calories: {e}")
+            return 0, 0
+        finally:
+            conn.close()
+    return 0, 0
+
+def count_unique_activity_types(user_id=None):
+    """Returns the count of unique activity types logged (overall or for a specific user)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            if user_id:
+                cur.execute("SELECT COUNT(DISTINCT activity_type) FROM workouts WHERE user_id = %s", (user_id,))
+            else:
+                cur.execute("SELECT COUNT(DISTINCT activity_type) FROM workouts")
+            count = cur.fetchone()[0]
+            return count
+        except psycopg2.Error as e:
+            print(f"Error counting unique activity types: {e}")
+            return 0
+        finally:
+            conn.close()
+    return 0
+
+def get_workouts_by_activity_type_breakdown(user_id=None):
+    """Returns a breakdown of workouts by activity type (count, total duration, total calories, avg duration)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            if user_id:
+                query = "SELECT activity_type, COUNT(*) AS total_workouts, SUM(duration_minutes) AS total_duration_minutes, SUM(calories_burned) AS total_calories_burned, AVG(duration_minutes) AS avg_duration_minutes FROM workouts WHERE user_id = %s GROUP BY activity_type ORDER BY activity_type"
+                df = pd.read_sql_query(query, conn, params=(user_id,))
+            else:
+                query = "SELECT activity_type, COUNT(*) AS total_workouts, SUM(duration_minutes) AS total_duration_minutes, SUM(calories_burned) AS total_calories_burned, AVG(duration_minutes) AS avg_duration_minutes FROM workouts GROUP BY activity_type ORDER BY activity_type"
+                df = pd.read_sql_query(query, conn)
+            return df
+        except psycopg2.Error as e:
+            print(f"Error getting activity type breakdown: {e}")
+            return pd.DataFrame()
+        finally:
+            conn.close()
+    return pd.DataFrame()
+
+def get_monthly_workout_summary(user_id=None):
+    """Returns a monthly summary of workouts (total duration, total calories)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            if user_id:
+                query = """
+                    SELECT
+                        TO_CHAR(workout_date, 'YYYY-MM') AS workout_month,
+                        COUNT(*) AS total_workouts,
+                        SUM(duration_minutes) AS total_duration,
+                        SUM(calories_burned) AS total_calories
+                    FROM workouts
+                    WHERE user_id = %s
+                    GROUP BY workout_month
+                    ORDER BY workout_month;
+                """
+                df = pd.read_sql_query(query, conn, params=(user_id,))
+            else:
+                query = """
+                    SELECT
+                        TO_CHAR(workout_date, 'YYYY-MM') AS workout_month,
+                        COUNT(*) AS total_workouts,
+                        SUM(duration_minutes) AS total_duration,
+                        SUM(calories_burned) AS total_calories
+                    FROM workouts
+                    GROUP BY workout_month
+                    ORDER BY workout_month;
+                """
+                df = pd.read_sql_query(query, conn)
+            return df
+        except psycopg2.Error as e:
+            print(f"Error getting monthly workout summary: {e}")
+            return pd.DataFrame()
+        finally:
+            conn.close()
+    return pd.DataFrame()
