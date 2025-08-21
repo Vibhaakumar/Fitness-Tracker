@@ -1,0 +1,210 @@
+# Fitness-Tracker# frontend_analytics.py
+import streamlit as st
+import pandas as pd
+from datetime import date
+from backend_analytics import (
+    create_user, get_users, get_user_by_username,
+    create_workout, read_workouts, update_workout, delete_workout,
+    get_total_users, get_total_workouts, get_total_duration,
+    get_total_calories_burned, get_average_duration,
+    get_average_calories_burned, get_min_max_duration,
+    get_min_max_calories_burned, count_unique_activity_types,
+    get_workouts_by_activity_type_breakdown, get_monthly_workout_summary
+)
+
+st.set_page_config(layout="wide", page_title="Personal Fitness Tracker")
+
+st.title("💪 Personal Fitness Tracker Dashboard")
+st.markdown("Track your workouts, monitor your progress, and gain insights into your fitness journey.")
+
+# --- User Management (Sidebar or Tab) ---
+st.sidebar.header("User Management")
+st.sidebar.subheader("Register New User")
+with st.sidebar.form("new_user_form"):
+    new_username = st.text_input("Username")
+    new_email = st.text_input("Email")
+    user_submitted = st.form_submit_button("Register User")
+    if user_submitted:
+        if new_username and new_email:
+            _, message = create_user(new_username, new_email)
+            st.sidebar.success(message)
+        else:
+            st.sidebar.error("Username and Email cannot be empty.")
+
+# Select a user to view/log workouts
+all_users_df = get_users()
+user_options = ["Select a User"]
+if not all_users_df.empty:
+    user_options.extend(all_users_df['username'].tolist())
+
+selected_username = st.sidebar.selectbox("Select User for Operations/Insights", user_options)
+selected_user_id = None
+if selected_username != "Select a User":
+    user_info = get_user_by_username(selected_username)
+    if user_info:
+        selected_user_id = user_info[0] # user_id
+
+# --- Main Content Tabs ---
+tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📝 Log Workout", "🔍 Workout History"])
+
+with tab1:
+    st.header("Dashboard & Business Insights")
+
+    if selected_user_id:
+        st.subheader(f"Insights for {selected_username}")
+    else:
+        st.subheader("Overall Fitness Insights")
+        st.info("Select a user from the sidebar to view personalized insights.")
+
+    # Aggregation Metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(label="Total Workouts", value=get_total_workouts(selected_user_id))
+    with col2:
+        total_duration = get_total_duration(selected_user_id)
+        st.metric(label="Total Workout Duration (mins)", value=f"{total_duration:,}")
+    with col3:
+        total_calories = get_total_calories_burned(selected_user_id)
+        st.metric(label="Total Calories Burned", value=f"{total_calories:,}")
+
+    st.markdown("---")
+
+    # More granular insights
+    col4, col5 = st.columns(2)
+    with col4:
+        st.subheader("Duration & Calories Per Workout")
+        avg_duration = get_average_duration(selected_user_id)
+        min_duration, max_duration = get_min_max_duration(selected_user_id)
+        st.write(f"Average Duration: **{avg_duration:.2f} minutes**")
+        st.write(f"Shortest Workout: **{min_duration} minutes**")
+        st.write(f"Longest Workout: **{max_duration} minutes**")
+        
+    with col5:
+        st.subheader("Calorie Burn Analysis")
+        avg_calories = get_average_calories_burned(selected_user_id)
+        min_calories, max_calories = get_min_max_calories_burned(selected_user_id)
+        st.write(f"Average Calories Burned: **{avg_calories:.2f} kcal**")
+        st.write(f"Min Calories Burned: **{min_calories} kcal**")
+        st.write(f"Max Calories Burned: **{max_calories} kcal**")
+
+    st.markdown("---")
+
+    st.subheader("Activity Type Breakdown")
+    unique_activities_count = count_unique_activity_types(selected_user_id)
+    st.write(f"Unique Activity Types Tracked: **{unique_activities_count}**")
+    
+    activity_breakdown_df = get_workouts_by_activity_type_breakdown(selected_user_id)
+    if not activity_breakdown_df.empty:
+        st.dataframe(activity_breakdown_df, use_container_width=True)
+    else:
+        st.info("No workout data to show breakdown for selected user or overall.")
+
+    st.subheader("Monthly Workout Summary")
+    monthly_summary_df = get_monthly_workout_summary(selected_user_id)
+    if not monthly_summary_df.empty:
+        st.dataframe(monthly_summary_df, use_container_width=True)
+    else:
+        st.info("No monthly workout data available.")
+
+with tab2:
+    st.header("Log a New Workout 🏋️")
+    if selected_user_id is None:
+        st.warning("Please select a user from the sidebar to log a workout.")
+    else:
+        st.write(f"Logging workout for: **{selected_username}**")
+        with st.form("workout_form"):
+            activity_type = st.selectbox("Activity Type", ['Running', 'Weightlifting', 'Swimming', 'Yoga', 'Cycling', 'Hiking', 'Other'])
+            duration_minutes = st.number_input("Duration (minutes)", min_value=1, max_value=1000, value=30)
+            calories_burned = st.number_input("Calories Burned (kcal)", min_value=0, max_value=5000, value=300)
+            workout_date = st.date_input("Workout Date", date.today())
+            notes = st.text_area("Notes (optional)")
+            
+            submitted = st.form_submit_button("Log Workout")
+            if submitted:
+                message = create_workout(selected_user_id, activity_type, duration_minutes, calories_burned, workout_date, notes)
+                st.success(message)
+
+with tab3:
+    st.header("Workout History 📜")
+    st.subheader("Filter & Sort Your Workouts")
+
+    # Fetch all workouts to get unique activity types for the filter
+    # This ensures the filter populates even if no user is selected or no filters are applied yet.
+    all_workouts_for_filters = read_workouts() 
+    history_activity_type_options = ["All"]
+    if not all_workouts_for_filters.empty:
+        history_activity_type_options.extend(sorted(all_workouts_for_filters['activity_type'].unique().tolist()))
+    
+    col_filter1, col_filter2 = st.columns(2)
+    with col_filter1:
+        filter_activity_type = st.selectbox("Filter by Activity Type", history_activity_type_options, key="history_filter_activity")
+    with col_filter2:
+        date_range = st.date_input("Select Date Range", value=[date.today(), date.today()], key="history_filter_date")
+        filter_start_date = date_range[0] if date_range and len(date_range) > 0 else None
+        filter_end_date = date_range[1] if date_range and len(date_range) > 1 else None
+
+    # Sorting
+    sort_options_history = {
+        "Workout Date (Newest First)": ("workout_date", "DESC"),
+        "Workout Date (Oldest First)": ("workout_date", "ASC"),
+        "Duration (Longest First)": ("duration_minutes", "DESC"),
+        "Calories Burned (Highest First)": ("calories_burned", "DESC")
+    }
+    selected_sort_key_history = st.selectbox("Sort By", list(sort_options_history.keys()), key="history_sort_by")
+    sort_by_column_history, sort_order_history = sort_options_history[selected_sort_key_history]
+
+    # Fetch and display workouts
+    filtered_workouts_df = read_workouts(
+        user_id=selected_user_id if selected_username != "Select a User" else None,
+        activity_type=filter_activity_type if filter_activity_type != "All" else None,
+        start_date=filter_start_date,
+        end_date=filter_end_date,
+        sort_by=sort_by_column_history,
+        sort_order=sort_order_history
+    )
+
+    if not filtered_workouts_df.empty:
+        st.dataframe(filtered_workouts_df, use_container_width=True)
+
+        st.subheader("Update/Delete Workout")
+        workout_ids = filtered_workouts_df['workout_id'].tolist()
+        workout_to_modify = st.selectbox("Select Workout ID to Modify", [''] + workout_ids)
+
+        if workout_to_modify:
+            selected_workout_data = filtered_workouts_df[filtered_workouts_df['workout_id'] == workout_to_modify].iloc[0]
+            
+            st.write(f"Modifying Workout ID: **{workout_to_modify}**")
+            with st.form("modify_workout_form"):
+                mod_activity_type = st.selectbox("Activity Type", ['Running', 'Weightlifting', 'Swimming', 'Yoga', 'Cycling', 'Hiking', 'Other'], index=['Running', 'Weightlifting', 'Swimming', 'Yoga', 'Cycling', 'Hiking', 'Other'].index(selected_workout_data['activity_type']))
+                mod_duration_minutes = st.number_input("Duration (minutes)", min_value=1, max_value=1000, value=int(selected_workout_data['duration_minutes']))
+                mod_calories_burned = st.number_input("Calories Burned (kcal)", min_value=0, max_value=5000, value=int(selected_workout_data['calories_burned']))
+                mod_workout_date = st.date_input("Workout Date", selected_workout_data['workout_date'])
+                mod_notes = st.text_area("Notes (optional)", value=selected_workout_data['notes'] if selected_workout_data['notes'] else "")
+
+                col_update, col_delete = st.columns(2)
+                with col_update:
+                    update_submitted = st.form_submit_button("Update Workout")
+                with col_delete:
+                    delete_submitted = st.form_submit_button("Delete Workout")
+
+                if update_submitted:
+                    updated_data = {
+                        "activity_type": mod_activity_type,
+                        "duration_minutes": mod_duration_minutes,
+                        "calories_burned": mod_calories_burned,
+                        "workout_date": mod_workout_date,
+                        "notes": mod_notes
+                    }
+                    message = update_workout(workout_to_modify, updated_data)
+                    st.success(message)
+                    st.experimental_rerun() # Rerun to refresh data
+                elif delete_submitted:
+                    message = delete_workout(workout_to_modify)
+                    st.success(message)
+                    st.experimental_rerun() # Rerun to refresh data
+
+    else:
+        st.info("No workout history found for the selected user or filters.")
+
+st.markdown("---")
+st.markdown("Developed by My DBMS Programming Assistant")
